@@ -1,0 +1,10 @@
+PKG compiler-libs.common ppx_deriving.api ppx_import oUnit hardcaml result ppx_tools.metaquot
+
+S src
+S src_test
+S pkg
+
+B _build/src
+B _build/src_test
+B _build/pkg
+
