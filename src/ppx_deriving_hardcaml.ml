@@ -156,7 +156,7 @@ let sig_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
     raise_errorf ~loc "[%s] sig_of_type: only supports record types" deriver
 
 let on_str_decls f ~options ~path type_decls =
-  [Str.value Nonrecursive (List.concat (List.map (f ~options ~path) type_decls))]
+  [Str.value Recursive (List.concat (List.map (f ~options ~path) type_decls))]
 
 let on_sig_decls f ~options ~path type_decls =
   List.concat (List.map (f ~options ~path) type_decls)
