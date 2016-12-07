@@ -124,10 +124,10 @@ let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
     let str_map_labels = List.map (expand_map_label var) labels in
     let str_map = [%expr fun f x -> [%e Exp.record str_map_labels None]] in
     let str_map2_labels = List.map (expand_map2_label var) labels in
-    let str_map2 = [%expr fun f x -> [%e Exp.record str_map2_labels None]] in
+    let str_map2 = [%expr fun f x0 x1 -> [%e Exp.record str_map2_labels None]] in
     let str_to_list_labels = List.map (expand_to_list_label var) labels in
     let str_to_list_args = build_to_list_args str_to_list_labels in
-    let str_to_list = [%expr List.concat [%e str_to_list_args]] in
+    let str_to_list = [%expr fun x -> List.concat [%e str_to_list_args]] in
     [
       Vb.mk (pvar "t") str_t;
       Vb.mk (pvar "map") str_map;
