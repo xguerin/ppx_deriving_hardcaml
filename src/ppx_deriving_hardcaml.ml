@@ -8,6 +8,11 @@ open Ast_convenience
 let deriver      = "hardcaml"
 let raise_errorf = Ppx_deriving.raise_errorf
 
+let parse_options options =
+  options |> List.iter (fun (name, expr) ->
+    match name with
+    | _ -> raise_errorf ~loc:expr.pexp_loc "%s does not support option %s" deriver name)
+
 let attr_bits attrs =
   Ppx_deriving.(attrs |> attr ~deriver "bits" |> Arg.(get_attr ~deriver expr))
 
@@ -62,8 +67,11 @@ let expand_t_label var ({ pld_name = { txt; loc; } } as label) =
   in
   (mknoloc (Lident txt), expr)
 
+let mkfield var memb = 
+  Exp.field (Exp.ident (mknoloc (Lident(var)))) (mknoloc (Lident(memb)))
+
 let expand_map_label var ({ pld_name = { txt; loc; } } as label) =
-  let ident = Exp.ident (mknoloc (Ldot (Lident("x"), txt))) in
+  let ident = mkfield "x" txt in
   let expr = match label.pld_type.ptyp_desc with
     | Ptyp_var v when v = var ->
       [%expr f [%e ident]]
@@ -77,8 +85,8 @@ let expand_map_label var ({ pld_name = { txt; loc; } } as label) =
   (mknoloc (Lident txt), expr)
 
 let expand_map2_label var ({ pld_name = { txt; loc; } } as label) =
-  let ident0 = Exp.ident (mknoloc (Ldot (Lident("x0"), txt))) in
-  let ident1 = Exp.ident (mknoloc (Ldot (Lident("x1"), txt))) in
+  let ident0 = mkfield "x0" txt in
+  let ident1 = mkfield "x1" txt in
   let expr = match label.pld_type.ptyp_desc with
     | Ptyp_var v when v = var ->
       [%expr f [%e ident0] [%e ident1]]
@@ -93,7 +101,7 @@ let expand_map2_label var ({ pld_name = { txt; loc; } } as label) =
   (mknoloc (Lident txt), expr)
 
 let expand_to_list_label var ({ pld_name = { txt; loc; } } as label) =
-  let ident = Exp.ident (mknoloc (Ldot (Lident("x"), txt))) in
+  let ident = mkfield "x" txt in
   match label.pld_type.ptyp_desc with
     | Ptyp_var v when v = var ->
       [%expr [ [%e ident] ]]
@@ -113,6 +121,7 @@ let build_to_list_args labels =
     (Exp.construct (mknoloc (Lident "[]")) None)
 
 let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
+  parse_options options;
   match type_decl.ptype_kind, type_decl.ptype_params, type_decl.ptype_manifest with
   | Ptype_record labels, [ ({ ptyp_desc = Ptyp_var(var) }, _) ], None ->
     let str_t_labels       = List.map (expand_t_label var) labels in
@@ -125,15 +134,16 @@ let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
     let str_to_list_args   = build_to_list_args str_to_list_labels in
     let str_to_list        = [%expr fun x -> List.concat [%e str_to_list_args]] in
     [
-      Vb.mk (pvar "t")       (Ppx_deriving.sanitize str_t);
-      Vb.mk (pvar "map")     (Ppx_deriving.sanitize str_map);
-      Vb.mk (pvar "map2")    (Ppx_deriving.sanitize str_map2);
-      Vb.mk (pvar "to_list") (Ppx_deriving.sanitize str_to_list);
+      Vb.mk (pvar "t")       str_t;
+      Vb.mk (pvar "map")     str_map;
+      Vb.mk (pvar "map2")    str_map2;
+      Vb.mk (pvar "to_list") str_to_list;
     ]
   | _ ->
     raise_errorf ~loc "[%s] str_of_type: only supports record types" deriver
 
 let sig_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
+  parse_options options;
   match type_decl.ptype_kind, type_decl.ptype_params with
   | Ptype_record labels, [ ({ ptyp_desc = Ptyp_var(v) }, _) ] ->
     List.iter (check_label v) labels;
@@ -152,14 +162,13 @@ let sig_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
     raise_errorf ~loc "[%s] sig_of_type: only supports record types" deriver
 
 let on_str_decls f ~options ~path type_decls =
-  [Str.value Recursive (List.concat (List.map (f ~options ~path) type_decls))]
+  List.map (fun decl -> Str.value Nonrecursive (f ~options ~path decl)) type_decls
 
 let on_sig_decls f ~options ~path type_decls =
   List.concat (List.map (f ~options ~path) type_decls)
 
 let () =
-  Ppx_deriving.(register
-   (create "hardcaml"
+  Ppx_deriving.(register (create deriver
     ~type_decl_str:(on_str_decls str_of_type)
     ~type_decl_sig:(on_sig_decls sig_of_type)
     ()
