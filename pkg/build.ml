@@ -8,7 +8,6 @@ let () =
   Pkg.describe "ppx_deriving_hardcaml" ~builder:(`OCamlbuild) [
     Pkg.lib "pkg/META";
     Pkg.lib ~exts:Exts.library "src/ppx_deriving_hardcaml";
-    Pkg.lib ~exts:Exts.module_library "src/ppx_deriving_hardcaml_runtime";
     Pkg.doc "README.md";
     Pkg.doc "LICENSE.txt";
   ]

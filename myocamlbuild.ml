@@ -12,10 +12,5 @@ let () = dispatch (fun phase ->
                    "src/ppx_deriving_hardcaml.cma "^
                    (ppx_deriving_component "ppx_deriving_show.cma"));
         A"-I"; A(ppx_deriving_component "")];
-    flag ["ocaml"; "link"; "use_hardcaml"; "byte"] &
-      A(ppx_deriving_component "ppx_deriving_runtime.cma");
-    flag ["ocaml"; "link"; "use_hardcaml"; "native"] &
-      A(ppx_deriving_component "ppx_deriving_runtime.cmxa");
-    ocaml_lib ~dir:"src" "src/ppx_deriving_hardcaml_runtime";
 
   | _ -> ())

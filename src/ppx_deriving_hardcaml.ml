@@ -8,9 +8,6 @@ open Ast_convenience
 let deriver      = "hardcaml"
 let raise_errorf = Ppx_deriving.raise_errorf
 
-let wrap_runtime decls =
-  Ppx_deriving.sanitize ~module_:(Lident "Ppx_deriving_hardcaml_runtime") decls
-
 let attr_bits attrs =
   Ppx_deriving.(attrs |> attr ~deriver "bits" |> Arg.(get_attr ~deriver expr))
 
@@ -109,8 +106,7 @@ let expand_to_list_label var ({ pld_name = { txt; loc; } } as label) =
 
 let build_to_list_args labels =
   List.fold_right 
-    (fun expr acc ->
-       Exp.construct
+    (fun expr acc -> Exp.construct
          (mknoloc (Lident "::"))
          (Some (Exp.tuple [ expr; acc ])))
     labels
@@ -119,20 +115,20 @@ let build_to_list_args labels =
 let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
   match type_decl.ptype_kind, type_decl.ptype_params, type_decl.ptype_manifest with
   | Ptype_record labels, [ ({ ptyp_desc = Ptyp_var(var) }, _) ], None ->
-    let str_t_labels = List.map (expand_t_label var) labels in
-    let str_t = Exp.record str_t_labels None in
-    let str_map_labels = List.map (expand_map_label var) labels in
-    let str_map = [%expr fun f x -> [%e Exp.record str_map_labels None]] in
-    let str_map2_labels = List.map (expand_map2_label var) labels in
-    let str_map2 = [%expr fun f x0 x1 -> [%e Exp.record str_map2_labels None]] in
+    let str_t_labels       = List.map (expand_t_label var) labels in
+    let str_t              = Exp.record str_t_labels None in
+    let str_map_labels     = List.map (expand_map_label var) labels in
+    let str_map            = [%expr fun f x -> [%e Exp.record str_map_labels None]] in
+    let str_map2_labels    = List.map (expand_map2_label var) labels in
+    let str_map2           = [%expr fun f x0 x1 -> [%e Exp.record str_map2_labels None]] in
     let str_to_list_labels = List.map (expand_to_list_label var) labels in
-    let str_to_list_args = build_to_list_args str_to_list_labels in
-    let str_to_list = [%expr fun x -> List.concat [%e str_to_list_args]] in
+    let str_to_list_args   = build_to_list_args str_to_list_labels in
+    let str_to_list        = [%expr fun x -> List.concat [%e str_to_list_args]] in
     [
-      Vb.mk (pvar "t") str_t;
-      Vb.mk (pvar "map") str_map;
-      Vb.mk (pvar "map2") str_map2;
-      Vb.mk (pvar "to_list") str_to_list;
+      Vb.mk (pvar "t")       (Ppx_deriving.sanitize str_t);
+      Vb.mk (pvar "map")     (Ppx_deriving.sanitize str_map);
+      Vb.mk (pvar "map2")    (Ppx_deriving.sanitize str_map2);
+      Vb.mk (pvar "to_list") (Ppx_deriving.sanitize str_to_list);
     ]
   | _ ->
     raise_errorf ~loc "[%s] str_of_type: only supports record types" deriver
@@ -147,9 +143,9 @@ let sig_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
     and sig_to_list = [%type: 'a t -> 'a list]
     in
     [
-      Sig.value (Val.mk (mknoloc "t") sig_t);
-      Sig.value (Val.mk (mknoloc "map") sig_map);
-      Sig.value (Val.mk (mknoloc "map2") sig_map2);
+      Sig.value (Val.mk (mknoloc "t")       sig_t);
+      Sig.value (Val.mk (mknoloc "map")     sig_map);
+      Sig.value (Val.mk (mknoloc "map2")    sig_map2);
       Sig.value (Val.mk (mknoloc "to_list") sig_to_list);
     ]
   | _, _ -> 
