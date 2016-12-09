@@ -21,21 +21,13 @@ let attr_length attrs =
 
 let get_bits ~loc attrs = 
   match attr_bits attrs with
-  | Some (({ pexp_desc = Pexp_constant (Pconst_integer (_, _)) } as iconst)) ->
-    iconst
-  | Some _ ->
-    raise_errorf ~loc "[%s] bits attribute only supports integers" deriver
-  | None ->
-    Exp.constant (Pconst_integer ("1", None))
+  | Some (expr) -> expr
+  | None -> Exp.constant (Pconst_integer ("1", None))
 
 let get_length ~loc attrs = 
   match attr_length attrs with
-  | Some (({ pexp_desc = Pexp_constant (Pconst_integer (_, _)) } as iconst)) ->
-    iconst
-  | Some _ ->
-    raise_errorf ~loc "[%s] length attribute only supports integers" deriver
-  | None ->
-    raise_errorf ~loc "[%s] length attribute must be set" deriver
+  | Some (expr) -> expr
+  | None -> raise_errorf ~loc "[%s] length attribute must be set" deriver
 
 let check_label var ({ pld_name = { txt; loc; } } as label) =
   match label.pld_type.ptyp_desc with
