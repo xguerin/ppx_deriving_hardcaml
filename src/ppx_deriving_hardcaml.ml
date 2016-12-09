@@ -62,6 +62,8 @@ let expand_t_label var ({ pld_name = { txt; loc; } } as label) =
       [%expr Array.to_list ([%e ainit])]
     | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
       expand_array_init ~loc txt label.pld_attributes
+    | Ptyp_constr (({ txt = Ldot(_, _) } as mid), [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+      Exp.ident mid
     | _ -> 
       raise_errorf ~loc "[%s] expand_t_label: only supports abstract record labels" deriver
   in
@@ -79,6 +81,9 @@ let expand_map_label var ({ pld_name = { txt; loc; } } as label) =
       [%expr List.map f [%e ident]]
     | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
       [%expr Array.map f [%e ident]]
+    | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+      let mapid = Exp.ident (mkloc (Ldot (mname, "map")) loc) in
+      [%expr [%e mapid] f [%e ident]]
     | _ -> 
       raise_errorf ~loc "[%s] expand_map_label: only supports abstract record labels" deriver
   in
@@ -95,8 +100,11 @@ let expand_map2_label var ({ pld_name = { txt; loc; } } as label) =
     | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
       [%expr Array.init (Array.length [%e ident0])
           (fun _i -> f (Array.get [%e ident0] _i) (Array.get [%e ident1] _i))]
+    | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+      let mapid = Exp.ident (mkloc (Ldot (mname, "map2")) loc) in
+      [%expr [%e mapid] f [%e ident0] [%e ident1]]
     | _ -> 
-      raise_errorf ~loc "[%s] expand_map_label: only supports abstract record labels" deriver
+      raise_errorf ~loc "[%s] expand_map2_label: only supports abstract record labels" deriver
   in
   (mknoloc (Lident txt), expr)
 
@@ -109,8 +117,10 @@ let expand_to_list_label var ({ pld_name = { txt; loc; } } as label) =
       ident
     | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
       [%expr Array.to_list [%e ident]]
+    | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+      Exp.apply (Exp.ident (mkloc (Ldot (mname, "to_list")) loc)) [ (Nolabel, ident) ]
     | _ -> 
-      raise_errorf ~loc "[%s] expand_map_label: only supports abstract record labels" deriver
+      raise_errorf ~loc "[%s] expand_to_list_label: only supports abstract record labels" deriver
 
 let build_to_list_args labels =
   List.fold_right 
