@@ -19,6 +19,9 @@ let attr_bits attrs =
 let attr_length attrs =
   Ppx_deriving.(attrs |> attr ~deriver "length" |> Arg.(get_attr ~deriver expr))
 
+let attr_rtlname attrs =
+  Ppx_deriving.(attrs |> attr ~deriver "rtlname" |> Arg.(get_attr ~deriver expr))
+
 let get_bits ~loc attrs = 
   match attr_bits attrs with
   | Some (expr) -> expr
@@ -38,22 +41,26 @@ let check_label var ({ pld_name = { txt; loc; } } as label) =
   | _ -> 
     raise_errorf ~loc "[%s] check_label: only supports abstract record labels" deriver
 
-let expand_array_init ~loc txt attrs =
+let expand_array_init ~loc vname attrs =
   let nbits = get_bits ~loc attrs in
   let length = get_length ~loc attrs in
-  let vname = Exp.constant (Pconst_string (txt, None)) in
   [%expr Array.init [%e length] (fun _i -> (([%e vname] ^ (string_of_int _i)), [%e nbits]))]
 
 let expand_t_label var ({ pld_name = { txt; loc; } } as label) =
+  let rtlname = 
+    match attr_rtlname label.pld_attributes with
+    | None -> Exp.constant (Pconst_string (txt, None)) 
+    | Some(e) -> e
+  in
   let expr = match label.pld_type.ptyp_desc with
     | Ptyp_var v when v = var ->
       let nbits = get_bits ~loc label.pld_attributes in
-      Exp.tuple [ Exp.constant (Pconst_string (txt, None)); nbits ]
+      Exp.tuple [ rtlname; nbits ]
     | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      let ainit = expand_array_init ~loc txt label.pld_attributes in
+      let ainit = expand_array_init ~loc rtlname label.pld_attributes in
       [%expr Array.to_list ([%e ainit])]
     | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      expand_array_init ~loc txt label.pld_attributes
+      expand_array_init ~loc rtlname label.pld_attributes
     | Ptyp_constr (({ txt = Ldot(_, _) } as mid), [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
       Exp.ident mid
     | _ -> 
