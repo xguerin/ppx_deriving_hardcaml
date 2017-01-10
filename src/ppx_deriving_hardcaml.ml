@@ -36,7 +36,8 @@ let check_label var ({ pld_name = { txt; loc; } } as label) =
   match label.pld_type.ptyp_desc with
   | Ptyp_var v
   | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc = Ptyp_var(v) } ])
-  | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+  | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ])
+  | Ptyp_constr ({ txt = Ldot(_, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
     ()
   | _ -> 
     raise_errorf ~loc "[%s] check_label: only supports abstract record labels" deriver
