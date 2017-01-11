@@ -8,10 +8,27 @@ open Ast_convenience
 let deriver      = "hardcaml"
 let raise_errorf = Ppx_deriving.raise_errorf
 
+type options_t = {
+  rtlprefix : Parsetree.expression option;
+  rtlsuffix : Parsetree.expression option;
+  rtlmangle : bool;
+}
+
 let parse_options options =
-  options |> List.iter (fun (name, expr) ->
-    match name with
-    | _ -> raise_errorf ~loc:expr.pexp_loc "%s does not support option %s" deriver name)
+  List.fold_left
+    (fun agg (name, expr) ->
+       match name with
+       | "rtlprefix" -> { agg with rtlprefix = Some(expr) }
+       | "rtlsuffix" -> { agg with rtlsuffix = Some(expr) }
+       | "rtlmangle" ->
+         begin match expr with
+           | [%expr true] -> { agg with rtlmangle = true }
+           | [%expr false] -> { agg with rtlmangle = false }
+           | _ -> raise_errorf ~loc:expr.pexp_loc "[%s] rtlmangle option must be a boolean" deriver
+         end
+       | _ -> raise_errorf ~loc:expr.pexp_loc "%s unsupported option %s" deriver name)
+    { rtlprefix = None; rtlsuffix = None; rtlmangle = false; }
+    options
 
 let attr_bits attrs =
   Ppx_deriving.(attrs |> attr ~deriver "bits" |> Arg.(get_attr ~deriver expr))
@@ -22,6 +39,15 @@ let attr_length attrs =
 let attr_rtlname attrs =
   Ppx_deriving.(attrs |> attr ~deriver "rtlname" |> Arg.(get_attr ~deriver expr))
 
+let attr_rtlprefix attrs =
+  Ppx_deriving.(attrs |> attr ~deriver "rtlprefix" |> Arg.(get_attr ~deriver expr))
+
+let attr_rtlsuffix attrs =
+  Ppx_deriving.(attrs |> attr ~deriver "rtlsuffix" |> Arg.(get_attr ~deriver expr))
+
+let attr_rtlmangle attrs =
+  Ppx_deriving.(attrs |> attr ~deriver "rtlmangle" |> Arg.(get_attr ~deriver expr))
+
 let get_bits ~loc attrs = 
   match attr_bits attrs with
   | Some (expr) -> expr
@@ -31,6 +57,38 @@ let get_length ~loc attrs =
   match attr_length attrs with
   | Some (expr) -> expr
   | None -> raise_errorf ~loc "[%s] length attribute must be set" deriver
+
+let get_rtlname ~loc txt attrs =
+  match attr_rtlname attrs with
+  | Some (expr) -> expr
+  | None -> Exp.constant (Pconst_string (txt, None)) 
+
+let get_rtlprefix ~loc opts attrs =
+  match attr_rtlprefix attrs with
+  | Some (expr) -> Some (expr)
+  | None -> opts.rtlprefix
+
+let get_rtlsuffix ~loc opts attrs =
+  match attr_rtlsuffix attrs with
+  | Some (expr) -> Some (expr)
+  | None -> opts.rtlsuffix
+
+let get_rtlmangle ~loc opts attrs =
+  match attr_rtlmangle attrs with
+  | Some ([%expr true]) -> true
+  | Some ([%expr false]) -> false
+  | Some (_) -> raise_errorf ~loc "[%s] rtlmangle attribute must be a boolean" deriver
+  | None -> opts.rtlmangle
+
+let mk_rtlident ~loc name prefix suffix mangle =
+  let ident = if mangle then [%expr [%e name] ^ "_" ^ n] else name
+  in
+  match prefix, suffix with
+  | None      , None       -> [%expr               ([%e ident])]
+  | Some (pre), None       -> [%expr ([%e pre])  ^ ([%e ident])]
+  | None      , Some (suf) -> [%expr               ([%e ident]) ^ ([%e suf])]
+  | Some (pre), Some (suf) -> [%expr ([%e pre])  ^ ([%e ident]) ^ ([%e suf])]
+  [@metaloc loc]
 
 let check_label var ({ pld_name = { txt; loc; } } as label) =
   match label.pld_type.ptyp_desc with
@@ -47,23 +105,29 @@ let expand_array_init ~loc vname attrs =
   let length = get_length ~loc attrs in
   [%expr Array.init [%e length] (fun _i -> (([%e vname] ^ (string_of_int _i)), [%e nbits]))]
 
-let expand_t_label var ({ pld_name = { txt; loc; } } as label) =
-  let rtlname = 
-    match attr_rtlname label.pld_attributes with
-    | None -> Exp.constant (Pconst_string (txt, None)) 
-    | Some(e) -> e
+let expand_t_label opts var ({ pld_name = { txt; loc; } } as label) =
+  let rtlname = get_rtlname ~loc txt label.pld_attributes
+  and rtlprefix = get_rtlprefix ~loc opts label.pld_attributes
+  and rtlsuffix = get_rtlsuffix ~loc opts label.pld_attributes
+  and rtlmangle = get_rtlmangle ~loc opts label.pld_attributes
   in
   let expr = match label.pld_type.ptyp_desc with
     | Ptyp_var v when v = var ->
-      let nbits = get_bits ~loc label.pld_attributes in
-      Exp.tuple [ rtlname; nbits ]
+      let nbits = get_bits ~loc label.pld_attributes
+      and rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix false
+      in
+      Exp.tuple [ rtlident; nbits ]
     | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      let ainit = expand_array_init ~loc rtlname label.pld_attributes in
+      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix false in
+      let ainit = expand_array_init ~loc rtlident label.pld_attributes in
       [%expr Array.to_list ([%e ainit])]
     | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      expand_array_init ~loc rtlname label.pld_attributes
-    | Ptyp_constr (({ txt = Ldot(_, _) } as mid), [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      Exp.ident mid
+      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix false in
+      expand_array_init ~loc rtlident label.pld_attributes
+    | Ptyp_constr (({ txt = Ldot(mname, _) } as mid), [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix rtlmangle in
+      let mapid = Exp.ident (mkloc (Ldot (mname, "map")) loc) in
+      [%expr [%e mapid] (fun (n, b) -> [%e rtlident], b) [%e Exp.ident mid]]
     | _ -> 
       raise_errorf ~loc "[%s] expand_t_label: only supports abstract record labels" deriver
   in
@@ -72,7 +136,7 @@ let expand_t_label var ({ pld_name = { txt; loc; } } as label) =
 let mkfield var memb = 
   Exp.field (Exp.ident (mknoloc (Lident(var)))) (mknoloc (Lident(memb)))
 
-let expand_map_label var ({ pld_name = { txt; loc; } } as label) =
+let expand_map_label opts var ({ pld_name = { txt; loc; } } as label) =
   let ident = mkfield "x" txt in
   let expr = match label.pld_type.ptyp_desc with
     | Ptyp_var v when v = var ->
@@ -89,7 +153,7 @@ let expand_map_label var ({ pld_name = { txt; loc; } } as label) =
   in
   (mknoloc (Lident txt), expr)
 
-let expand_map2_label var ({ pld_name = { txt; loc; } } as label) =
+let expand_map2_label opts var ({ pld_name = { txt; loc; } } as label) =
   let ident0 = mkfield "x0" txt in
   let ident1 = mkfield "x1" txt in
   let expr = match label.pld_type.ptyp_desc with
@@ -108,7 +172,7 @@ let expand_map2_label var ({ pld_name = { txt; loc; } } as label) =
   in
   (mknoloc (Lident txt), expr)
 
-let expand_to_list_label var ({ pld_name = { txt; loc; } } as label) =
+let expand_to_list_label opts var ({ pld_name = { txt; loc; } } as label) =
   let ident = mkfield "x" txt in
   match label.pld_type.ptyp_desc with
     | Ptyp_var v when v = var ->
@@ -131,16 +195,16 @@ let build_to_list_args labels =
     (Exp.construct (mknoloc (Lident "[]")) None)
 
 let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
-  parse_options options;
+  let opts = parse_options options in
   match type_decl.ptype_kind, type_decl.ptype_params, type_decl.ptype_manifest with
   | Ptype_record labels, [ ({ ptyp_desc = Ptyp_var(var) }, _) ], None ->
-    let str_t_labels       = List.map (expand_t_label var) labels in
+    let str_t_labels       = List.map (expand_t_label opts var) labels in
     let str_t              = Exp.record str_t_labels None in
-    let str_map_labels     = List.map (expand_map_label var) labels in
+    let str_map_labels     = List.map (expand_map_label opts var) labels in
     let str_map            = [%expr fun f x -> [%e Exp.record str_map_labels None]] in
-    let str_map2_labels    = List.map (expand_map2_label var) labels in
+    let str_map2_labels    = List.map (expand_map2_label opts var) labels in
     let str_map2           = [%expr fun f x0 x1 -> [%e Exp.record str_map2_labels None]] in
-    let str_to_list_labels = List.map (expand_to_list_label var) labels in
+    let str_to_list_labels = List.map (expand_to_list_label opts var) labels in
     let str_to_list_args   = build_to_list_args str_to_list_labels in
     let str_to_list        = [%expr fun x -> List.concat [%e str_to_list_args]] in
     [
@@ -153,7 +217,6 @@ let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
     raise_errorf ~loc "[%s] str_of_type: only supports record types" deriver
 
 let sig_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
-  parse_options options;
   match type_decl.ptype_kind, type_decl.ptype_params with
   | Ptype_record labels, [ ({ ptyp_desc = Ptyp_var(v) }, _) ] ->
     List.iter (check_label v) labels;
