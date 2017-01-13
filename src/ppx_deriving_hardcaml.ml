@@ -80,8 +80,16 @@ let get_rtlmangle ~loc opts attrs =
   | Some (_) -> raise_errorf ~loc "[%s] rtlmangle attribute must be a boolean" deriver
   | None -> opts.rtlmangle
 
-let mk_rtlident ~loc name prefix suffix mangle =
-  let ident = if mangle then [%expr [%e name] ^ "_" ^ n] else name
+let mk_rtlident ~loc name prefix suffix =
+  match prefix, suffix with
+  | None      , None       -> [%expr               ([%e name])]
+  | Some (pre), None       -> [%expr ([%e pre])  ^ ([%e name])]
+  | None      , Some (suf) -> [%expr               ([%e name]) ^ ([%e suf])]
+  | Some (pre), Some (suf) -> [%expr ([%e pre])  ^ ([%e name]) ^ ([%e suf])]
+  [@metaloc loc]
+
+let mk_rtlident_mangle ~loc name prefix suffix mangle =
+  let ident = if mangle then [%expr [%e name] ^ "_" ^ n] else [%expr n]
   in
   match prefix, suffix with
   | None      , None       -> [%expr               ([%e ident])]
@@ -114,18 +122,17 @@ let expand_t_label opts var ({ pld_name = { txt; loc; } } as label) =
   let expr = match label.pld_type.ptyp_desc with
     | Ptyp_var v when v = var ->
       let nbits = get_bits ~loc label.pld_attributes
-      and rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix false
-      in
+      and rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix in
       Exp.tuple [ rtlident; nbits ]
     | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix false in
+      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix in
       let ainit = expand_array_init ~loc rtlident label.pld_attributes in
       [%expr Array.to_list ([%e ainit])]
     | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix false in
+      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix in
       expand_array_init ~loc rtlident label.pld_attributes
     | Ptyp_constr (({ txt = Ldot(mname, _) } as mid), [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix rtlmangle in
+      let rtlident = mk_rtlident_mangle ~loc rtlname rtlprefix rtlsuffix rtlmangle in
       let mapid = Exp.ident (mkloc (Ldot (mname, "map")) loc) in
       [%expr [%e mapid] (fun (n, b) -> [%e rtlident], b) [%e Exp.ident mid]]
     | _ -> 
