@@ -8,6 +8,10 @@ open Ast_convenience
 let deriver      = "hardcaml"
 let raise_errorf = Ppx_deriving.raise_errorf
 
+(*
+ * Option parsing
+ *)
+
 type options_t = {
   rtlprefix : Parsetree.expression option;
   rtlsuffix : Parsetree.expression option;
@@ -29,6 +33,10 @@ let parse_options options =
        | _ -> raise_errorf ~loc:expr.pexp_loc "%s unsupported option %s" deriver name)
     { rtlprefix = None; rtlsuffix = None; rtlmangle = false; }
     options
+
+(*
+ * Attribute definition and parsing
+ *)
 
 let attr_bits attrs =
   Ppx_deriving.(attrs |> attr ~deriver "bits" |> Arg.(get_attr ~deriver expr))
@@ -80,6 +88,10 @@ let get_rtlmangle ~loc opts attrs =
   | Some (_) -> raise_errorf ~loc "[%s] rtlmangle attribute must be a boolean" deriver
   | None -> opts.rtlmangle
 
+(*
+ * Identifier manipulation
+ *)
+
 let mk_rtlident ~loc name prefix suffix =
   match prefix, suffix with
   | None      , None       -> [%expr               ([%e name])]
@@ -88,23 +100,28 @@ let mk_rtlident ~loc name prefix suffix =
   | Some (pre), Some (suf) -> [%expr ([%e pre])  ^ ([%e name]) ^ ([%e suf])]
   [@metaloc loc]
 
-let mk_rtlident_mangle ~loc name prefix suffix mangle =
-  let ident = if mangle then [%expr [%e name] ^ "_" ^ n] else [%expr n]
-  in
-  match prefix, suffix with
-  | None      , None       -> [%expr               ([%e ident])]
-  | Some (pre), None       -> [%expr ([%e pre])  ^ ([%e ident])]
-  | None      , Some (suf) -> [%expr               ([%e ident]) ^ ([%e suf])]
-  | Some (pre), Some (suf) -> [%expr ([%e pre])  ^ ([%e ident]) ^ ([%e suf])]
-  [@metaloc loc]
+let mangle_name ~loc name mangle =
+  if mangle then [%expr [%e name] ^ "_" ^ _n] else [%expr _n]
+
+(*
+ * Code generation utility functions
+ *)
+
+let check_list_and_array_label var loc = function
+  | Ptyp_var v
+  | Ptyp_constr ({ txt = Ldot(_, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+    ()
+  | _ -> 
+    raise_errorf ~loc "[%s] check_label: only supports abstract record labels" deriver
 
 let check_label var ({ pld_name = { txt; loc; } } as label) =
   match label.pld_type.ptyp_desc with
   | Ptyp_var v
-  | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc = Ptyp_var(v) } ])
-  | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ])
   | Ptyp_constr ({ txt = Ldot(_, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
     ()
+  | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc } ])
+  | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc } ]) ->
+    check_list_and_array_label var loc ptyp_desc
   | _ -> 
     raise_errorf ~loc "[%s] check_label: only supports abstract record labels" deriver
 
@@ -113,85 +130,207 @@ let expand_array_init ~loc vname attrs =
   let length = get_length ~loc attrs in
   [%expr Array.init [%e length] (fun _i -> (([%e vname] ^ (string_of_int _i)), [%e nbits]))]
 
-let expand_t_label opts var ({ pld_name = { txt; loc; } } as label) =
-  let rtlname = get_rtlname ~loc txt label.pld_attributes
-  and rtlprefix = get_rtlprefix ~loc opts label.pld_attributes
-  and rtlsuffix = get_rtlsuffix ~loc opts label.pld_attributes
-  and rtlmangle = get_rtlmangle ~loc opts label.pld_attributes
+let expand_array_init_str ~loc vname mapid mid attrs =
+  let length = get_length ~loc attrs in
+  [%expr Array.init [%e length] (fun _i ->
+      [%e mapid] (fun (_n, _b) -> ([%e vname], _b)) [%e Exp.ident mid])]
+
+(*
+ * Expand t label
+ *)
+
+let expand_t_label_array var loc attrs name prefix suffix mangle = function
+  (* 'a *)
+  | Ptyp_var(v) when v = var ->
+    let rtlident = mk_rtlident ~loc name prefix suffix in
+    expand_array_init ~loc rtlident attrs
+  (* 'a Module.t *)
+  | Ptyp_constr (({ txt = Ldot(mname, _) } as mid), [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+    let mangled = [%expr [%e mangle_name ~loc name mangle] ^ (string_of_int _i)] in
+    let rtlident = mk_rtlident ~loc mangled prefix suffix in
+    let mapid = Exp.ident (mkloc (Ldot (mname, "map")) loc) in
+    expand_array_init_str ~loc rtlident mapid mid attrs
+  (* Default *)
+  | _ ->
+    raise_errorf ~loc "[%s] expand_t_label_array: only supports abstract record labels" deriver
+
+let expand_t_label_list var loc attrs name prefix suffix mangle desc =
+  let ainit = expand_t_label_array var loc attrs name prefix suffix mangle desc in
+  [%expr Array.to_list ([%e ainit])]
+
+let expand_t_label opts var { pld_name = { txt; loc; }; pld_type; pld_attributes; } =
+  let rtlname = get_rtlname ~loc txt pld_attributes
+  and rtlprefix = get_rtlprefix ~loc opts pld_attributes
+  and rtlsuffix = get_rtlsuffix ~loc opts pld_attributes
+  and rtlmangle = get_rtlmangle ~loc opts pld_attributes
   in
-  let expr = match label.pld_type.ptyp_desc with
+  let expr = match pld_type.ptyp_desc with
+    (* 'a *)
     | Ptyp_var v when v = var ->
-      let nbits = get_bits ~loc label.pld_attributes
+      let nbits = get_bits ~loc pld_attributes
       and rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix in
       Exp.tuple [ rtlident; nbits ]
-    | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix in
-      let ainit = expand_array_init ~loc rtlident label.pld_attributes in
-      [%expr Array.to_list ([%e ainit])]
-    | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      let rtlident = mk_rtlident ~loc rtlname rtlprefix rtlsuffix in
-      expand_array_init ~loc rtlident label.pld_attributes
+    (* 'a Module.t *)
     | Ptyp_constr (({ txt = Ldot(mname, _) } as mid), [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      let rtlident = mk_rtlident_mangle ~loc rtlname rtlprefix rtlsuffix rtlmangle in
+      let mangled = mangle_name ~loc rtlname rtlmangle in
+      let rtlident = mk_rtlident ~loc mangled rtlprefix rtlsuffix in
       let mapid = Exp.ident (mkloc (Ldot (mname, "map")) loc) in
-      [%expr [%e mapid] (fun (n, b) -> [%e rtlident], b) [%e Exp.ident mid]]
+      [%expr [%e mapid] (fun (_n, _b) -> [%e rtlident], _b) [%e Exp.ident mid]]
+    (* 'a list, 'a Module.t list *)
+    | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc } ]) ->
+      expand_t_label_list var loc pld_attributes rtlname rtlprefix rtlsuffix rtlmangle ptyp_desc
+    (* 'a array, 'a Module.t array *)
+    | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc } ]) ->
+      expand_t_label_array var loc pld_attributes rtlname rtlprefix rtlsuffix rtlmangle ptyp_desc
+    (* Default *)
     | _ -> 
       raise_errorf ~loc "[%s] expand_t_label: only supports abstract record labels" deriver
   in
   (mknoloc (Lident txt), expr)
 
+(*
+ * Expand map label
+ *)
+
 let mkfield var memb = 
   Exp.field (Exp.ident (mknoloc (Lident(var)))) (mknoloc (Lident(memb)))
+
+let expand_map_label_list var loc ident = function
+  (* 'a *)
+  | Ptyp_var(v) when v = var ->
+    [%expr List.map f [%e ident]]
+  (* 'a Module.t *)
+  | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+    let mapid = Exp.ident (mkloc (Ldot (mname, "map")) loc) in
+    [%expr List.map (fun _e -> [%e mapid] f _e) [%e ident]]
+  (* Default *)
+  | _ -> 
+    raise_errorf ~loc "[%s] expand_map_label_list: only supports abstract record labels" deriver
+
+let expand_map_label_array var loc ident = function
+  (* 'a *)
+  | Ptyp_var(v) when v = var ->
+    [%expr Array.map f [%e ident]]
+  (* 'a Module.t *)
+  | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+    let mapid = Exp.ident (mkloc (Ldot (mname, "map")) loc) in
+    [%expr Array.map (fun _e -> [%e mapid] f _e) [%e ident]]
+  (* Default *)
+  | _ -> 
+    raise_errorf ~loc "[%s] expand_map_label_list: only supports abstract record labels" deriver
 
 let expand_map_label opts var ({ pld_name = { txt; loc; } } as label) =
   let ident = mkfield "x" txt in
   let expr = match label.pld_type.ptyp_desc with
+    (* 'a *)
     | Ptyp_var v when v = var ->
       [%expr f [%e ident]]
-    | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      [%expr List.map f [%e ident]]
-    | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      [%expr Array.map f [%e ident]]
+    (* 'a Module.t *)
     | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
       let mapid = Exp.ident (mkloc (Ldot (mname, "map")) loc) in
       [%expr [%e mapid] f [%e ident]]
+    (* 'a list, 'a Module.t list *)
+    | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc } ]) ->
+      expand_map_label_list var loc ident ptyp_desc
+    (* 'a array, 'a Module.t array *)
+    | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc } ]) ->
+      expand_map_label_array var loc ident ptyp_desc
+    (* Default *)
     | _ -> 
       raise_errorf ~loc "[%s] expand_map_label: only supports abstract record labels" deriver
   in
   (mknoloc (Lident txt), expr)
 
+(*
+ * Expand map2 label
+ *)
+
+let expand_map2_label_list var loc ident0 ident1 = function
+  (* 'a *)
+  | Ptyp_var(v) when v = var ->
+    [%expr List.map2 f [%e ident0] [%e ident1]]
+  (* 'a Module.t *)
+  | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+    let mapid = Exp.ident (mkloc (Ldot (mname, "map2")) loc) in
+    [%expr List.map2 (fun _e0 _e1 -> [%e mapid] f _e0 _e1) [%e ident0] [%e ident1]]
+  (* Default *)
+  | _ -> 
+    raise_errorf ~loc "[%s] expand_map_label_list: only supports abstract record labels" deriver
+
+let expand_map2_label_array var loc ident0 ident1 = function
+  (* 'a *)
+  | Ptyp_var(v) when v = var ->
+    [%expr Array.init (Array.length [%e ident0])
+        (fun _i -> f (Array.get [%e ident0] _i) (Array.get [%e ident1] _i))]
+  (* 'a Module.t *)
+  | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+    let mapid = Exp.ident (mkloc (Ldot (mname, "map2")) loc) in
+    [%expr Array.init (Array.length [%e ident0])
+        (fun _i -> [%e mapid] f (Array.get [%e ident0] _i) (Array.get [%e ident1] _i))]
+  (* Default *)
+  | _ -> 
+    raise_errorf ~loc "[%s] expand_map_label_list: only supports abstract record labels" deriver
+
 let expand_map2_label opts var ({ pld_name = { txt; loc; } } as label) =
   let ident0 = mkfield "x0" txt in
   let ident1 = mkfield "x1" txt in
   let expr = match label.pld_type.ptyp_desc with
+    (* 'a *)
     | Ptyp_var v when v = var ->
       [%expr f [%e ident0] [%e ident1]]
-    | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      [%expr List.map2 f [%e ident0] [%e ident1]]
-    | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      [%expr Array.init (Array.length [%e ident0])
-          (fun _i -> f (Array.get [%e ident0] _i) (Array.get [%e ident1] _i))]
+    (* 'a Module.t *)
     | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
       let mapid = Exp.ident (mkloc (Ldot (mname, "map2")) loc) in
       [%expr [%e mapid] f [%e ident0] [%e ident1]]
+    (* 'a list, 'a Module.t list *)
+    | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc } ])  ->
+      expand_map2_label_list var loc ident0 ident1 ptyp_desc
+    (* 'a array, 'a Module.t array *)
+    | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc } ]) ->
+      expand_map2_label_array var loc ident0 ident1 ptyp_desc
+    (* Default *)
     | _ -> 
       raise_errorf ~loc "[%s] expand_map2_label: only supports abstract record labels" deriver
   in
   (mknoloc (Lident txt), expr)
 
+(*
+ * Expand to_list label
+ *)
+
+let expand_to_list_label_list var loc ident = function
+  (* 'a *)
+  | Ptyp_var(v) when v = var ->
+    ident
+  (* 'a Module.t *)
+  | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+    let to_list_id = Exp.ident (mkloc (Ldot (mname, "to_list")) loc) in
+    [%expr List.flatten (List.map (fun _e -> [%e to_list_id] _e) [%e ident])]
+  (* Default *)
+  | _ -> 
+    raise_errorf ~loc "[%s] expand_map_label_list: only supports abstract record labels" deriver
+
+let expand_to_list_label_array var loc ident desc =
+  expand_to_list_label_list var loc [%expr Array.to_list [%e ident]] desc
+
 let expand_to_list_label opts var ({ pld_name = { txt; loc; } } as label) =
   let ident = mkfield "x" txt in
   match label.pld_type.ptyp_desc with
-    | Ptyp_var v when v = var ->
-      [%expr [ [%e ident] ]]
-    | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      ident
-    | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      [%expr Array.to_list [%e ident]]
-    | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
-      Exp.apply (Exp.ident (mkloc (Ldot (mname, "to_list")) loc)) [ (Nolabel, ident) ]
-    | _ -> 
-      raise_errorf ~loc "[%s] expand_to_list_label: only supports abstract record labels" deriver
+  (* 'a *)
+  | Ptyp_var v when v = var ->
+    [%expr [ [%e ident] ]]
+  (* 'a Module.t *)
+  | Ptyp_constr ({ txt = Ldot(mname, _) }, [ { ptyp_desc = Ptyp_var(v) } ]) when v = var ->
+    Exp.apply (Exp.ident (mkloc (Ldot (mname, "to_list")) loc)) [ (Nolabel, ident) ]
+  (* 'a list, 'a Module.t list *)
+  | Ptyp_constr ({ txt = Lident("list") }, [ { ptyp_desc } ]) ->
+    expand_to_list_label_list var loc ident ptyp_desc
+  (* 'a array, 'a Module.t array *)
+  | Ptyp_constr ({ txt = Lident("array") }, [ { ptyp_desc } ]) ->
+    expand_to_list_label_array var loc ident ptyp_desc
+  (* Default *)
+  | _ -> 
+    raise_errorf ~loc "[%s] expand_to_list_label: only supports abstract record labels" deriver
 
 let build_to_list_args labels =
   List.fold_right 
@@ -200,6 +339,10 @@ let build_to_list_args labels =
          (Some (Exp.tuple [ expr; acc ])))
     labels
     (Exp.construct (mknoloc (Lident "[]")) None)
+
+(*
+ * PPX deriving
+ *)
 
 let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
   let opts = parse_options options in
