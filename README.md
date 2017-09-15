@@ -6,9 +6,7 @@ This module implements a plugin for the `ppx_deriving` rewriter that supports th
 * Provide an optional `bits` attribute for signals
 * Provide a required `width` attribute for `list` and `array`
 
-## Examples
-
-### Module interface
+## Module interface
 
 Original syntax:
 
@@ -32,7 +30,7 @@ module S : sig
 end
 ```
 
-### Module implementation
+## Module implementation
 
 Original syntax:
 
@@ -55,3 +53,10 @@ module S = struct
   } [@@deriving hardcaml]
 end
 ```
+
+## Options
+
+* `rtlprefix`: prepend `rtlprefix` to the generated RTL name (string)
+* `rtlsuffix`: append `rtlsuffix` to the generated RTL name (string)
+* `rtlmangle`: when using interfaces, mangle the name of the interface and its signals (boolean)
+* `extends`: list of interfaces to extend (list)
