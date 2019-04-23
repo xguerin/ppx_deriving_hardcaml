@@ -3,13 +3,20 @@ open Ocamlbuild_plugin
 let () = dispatch (fun phase ->
   match phase with
   | After_rules ->
-    let ppx_deriving_component deriver =
-      (Findlib.query "ppx_deriving").Findlib.location ^ "/" ^ deriver
-    in
     flag ["ocaml"; "compile"; "use_hardcaml"] &
-      S[A"-ppx"; A("ocamlfind ppx_deriving/ppx_deriving "^
-                   "src/ppx_deriving_hardcaml.cma "^
-                   (ppx_deriving_component "ppx_deriving_show.cma"));
-        A"-I"; A(ppx_deriving_component "")];
-
+      Sh(String.chomp (run_and_read
+                           "ocamlfind printppx \
+                            ppx_deriving ppx_deriving.show \
+                            -ppxopt ppx_deriving,src/ppx_deriving_hardcaml.cma"));
+    let add_package tags package =
+      flag ("compile" :: "byte" :: tags)
+        (Findlib.compile_flags_byte [package]);
+      flag ("compile" :: "native" :: tags)
+        (Findlib.compile_flags_native [package]);
+      flag ("link" :: "byte" :: tags)
+        (Findlib.link_flags_byte [package]);
+      flag ("link" :: "native" :: tags)
+        (Findlib.link_flags_native [package]);
+    in
+    add_package ["ocaml"; "use_hardcaml"] (Findlib.query "ppx_deriving.runtime");
   | _ -> ())
